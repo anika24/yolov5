@@ -278,11 +278,18 @@ def train(opt, device):
                     val_top1, val_top5, val_loss = validate.run(
                         model=ema.ema, dataloader=valloader, criterion=criterion, pbar=pbar
                     )  # HH19 val accuracy & loss
-                    fitness = val_top1
+                    val_loss = val_loss.item() if hasattr(val_loss, 'item') else float(val_loss)
                     if has_test:
                         test_top1, test_top5, test_loss = validate.run(
                             model=ema.ema, dataloader=testloader, criterion=criterion, pbar=pbar
                         )  # HH25 test accuracy & loss
+                        test_loss = test_loss.item() if hasattr(test_loss, 'item') else float(test_loss)
+                    if has_test:
+                        n_val  = len(valloader.dataset)
+                        n_test = len(testloader.dataset)
+                        fitness = (val_top1 * n_val + test_top1 * n_test) / (n_val + n_test)
+                    else:
+                        fitness = val_top1
 
         # Scheduler
         scheduler.step()
@@ -341,7 +348,7 @@ def train(opt, device):
                 torch.save(ckpt, last)
                 if best_fitness == fitness:
                     torch.save(ckpt, best)
-                    LOGGER.info(f"Best checkpoint → epoch {epoch + 1}  (val_top1={fitness:.4f}  test_top1={test_top1:.4f})")
+                    LOGGER.info(f"Best checkpoint → epoch {epoch + 1}  (fitness={fitness:.4f}  val_top1={val_top1:.4f}  test_top1={test_top1:.4f})")
                 del ckpt
 
     # Train complete
