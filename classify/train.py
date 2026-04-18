@@ -182,13 +182,6 @@ def train(opt, device):
             m.p = opt.dropout  # set dropout
     for p in model.parameters():
         p.requires_grad = True  # for training
-    # Freeze backbone (layers 0-9); only train the classification head
-    _freeze_pfx = tuple(f"model.model.{i}." for i in range(10))
-    for _n, _p in model.named_parameters():
-        if any(_n.startswith(_fp) for _fp in _freeze_pfx):
-            _p.requires_grad = False
-    _trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    LOGGER.info(f"Backbone frozen. Trainable params: {_trainable:,}")
     model = model.to(device)
 
     # Info
