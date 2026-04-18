@@ -227,7 +227,7 @@ def train(opt, device):
     # CSV results file — written every epoch for full per-epoch export
     results_csv = save_dir / "results.csv"
     csv_header = ["epoch", "train_loss", "val_loss", "val_top1", "val_top5",
-                  "test_loss", "test_top1", "test_top5", "lr"]
+                  "test_loss", "test_top1", "test_top5", "lr", "is_best"]
     with open(results_csv, "w", newline="") as f:
         csv.writer(f).writerow(csv_header)
 
@@ -313,11 +313,13 @@ def train(opt, device):
             logger.log_metrics(metrics, epoch)
 
             # Append row to results CSV
+            _is_best = best_fitness == fitness and fitness > 0.0
             with open(results_csv, "a", newline="") as f:
                 csv.writer(f).writerow([
                     epoch + 1, tloss, val_loss, val_top1, val_top5,
                     test_loss, test_top1, test_top5,
                     optimizer.param_groups[0]["lr"],
+                    _is_best,
                 ])
 
             # Save model
