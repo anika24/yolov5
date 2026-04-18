@@ -158,6 +158,13 @@ def train(opt, device):
             m.p = opt.dropout  # set dropout
     for p in model.parameters():
         p.requires_grad = True  # for training
+    # Freeze backbone (layers 0-9); only train the classification head
+    _freeze_pfx = tuple(f"model.model.{i}." for i in range(10))
+    for _n, _p in model.named_parameters():
+        if any(_n.startswith(_fp) for _fp in _freeze_pfx):
+            _p.requires_grad = False
+    _trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    LOGGER.info(f"Backbone frozen. Trainable params: {_trainable:,}")
     model = model.to(device)
 
     # Info
@@ -198,6 +205,8 @@ def train(opt, device):
     t0 = time.time()
     criterion = smartCrossEntropyLoss(label_smoothing=opt.label_smoothing)  # loss function
     best_fitness = 0.0
+    _es_counter = 0    # early-stopping patience counter
+    _es_patience = 15
     scaler = amp.GradScaler(enabled=cuda)
     val = test_dir.stem  # 'val' or 'test'
     LOGGER.info(
@@ -255,6 +264,12 @@ def train(opt, device):
             # Best fitness
             if fitness > best_fitness:
                 best_fitness = fitness
+                _es_counter = 0
+            else:
+                _es_counter += 1
+                if _es_counter >= _es_patience:
+                    LOGGER.info(f"Early stopping: no improvement for {_es_patience} epochs.")
+                    break
 
             # Log
             metrics = {
@@ -285,6 +300,7 @@ def train(opt, device):
                 torch.save(ckpt, last)
                 if best_fitness == fitness:
                     torch.save(ckpt, best)
+                    LOGGER.info(f"Best checkpoint → epoch {epoch + 1}  (top1={fitness:.4f})")
                 del ckpt
 
     # Train complete
