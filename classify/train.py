@@ -14,6 +14,7 @@ Torchvision models: --model resnet50, efficientnet_b0, etc. See https://pytorch.
 """
 
 import argparse
+import csv
 import os
 import subprocess
 import sys
@@ -126,10 +127,12 @@ def train(opt, device):
         workers=nw,
     )
 
-    test_dir = data_dir / "test" if (data_dir / "test").exists() else data_dir / "val"  # data/test or data/val
+    val_dir  = data_dir / "val"
+    test_dir = data_dir / "test"
+    has_test = test_dir.exists()
     if RANK in {-1, 0}:
-        testloader = create_classification_dataloader(
-            path=test_dir,
+        valloader = create_classification_dataloader(
+            path=val_dir,
             imgsz=imgsz,
             batch_size=bs // WORLD_SIZE * 2,
             augment=False,
@@ -137,6 +140,18 @@ def train(opt, device):
             rank=-1,
             workers=nw,
         )
+        if has_test:
+            testloader = create_classification_dataloader(
+                path=test_dir,
+                imgsz=imgsz,
+                batch_size=bs // WORLD_SIZE * 2,
+                augment=False,
+                cache=opt.cache,
+                rank=-1,
+                workers=nw,
+            )
+        else:
+            testloader = valloader
 
     # Model
     with torch_distributed_zero_first(LOCAL_RANK), WorkingDirectory(ROOT):
@@ -170,7 +185,7 @@ def train(opt, device):
     # Info
     if RANK in {-1, 0}:
         model.names = trainloader.dataset.classes  # attach class names
-        model.transforms = testloader.dataset.torch_transforms  # attach inference transforms
+        model.transforms = valloader.dataset.torch_transforms  # attach inference transforms
         model_info(model)
         if opt.verbose:
             LOGGER.info(model)
@@ -208,16 +223,25 @@ def train(opt, device):
     _es_counter = 0    # early-stopping patience counter
     _es_patience = 15
     scaler = amp.GradScaler(enabled=cuda)
-    val = test_dir.stem  # 'val' or 'test'
+
+    # CSV results file — written every epoch for full per-epoch export
+    results_csv = save_dir / "results.csv"
+    csv_header = ["epoch", "train_loss", "val_loss", "val_top1", "val_top5",
+                  "test_loss", "test_top1", "test_top5", "lr"]
+    with open(results_csv, "w", newline="") as f:
+        csv.writer(f).writerow(csv_header)
+
     LOGGER.info(
         f"Image sizes {imgsz} train, {imgsz} test\n"
         f"Using {nw * WORLD_SIZE} dataloader workers\n"
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f"Starting {opt.model} training on {data} dataset with {nc} classes for {epochs} epochs...\n\n"
-        f"{'Epoch':>10}{'GPU_mem':>10}{'train_loss':>12}{f'{val}_loss':>12}{'top1_acc':>12}{'top5_acc':>12}"
+        f"{'Epoch':>10}{'GPU_mem':>10}{'train_loss':>12}{'val_loss':>12}{'val_top1':>12}"
+        f"{'test_loss':>12}{'test_top1':>12}"
     )
     for epoch in range(epochs):  # loop over the dataset multiple times
-        tloss, vloss, fitness = 0.0, 0.0, 0.0  # train loss, val loss, fitness
+        tloss, val_loss, test_loss, fitness = 0.0, 0.0, 0.0, 0.0
+        val_top1, val_top5, test_top1, test_top5 = 0.0, 0.0, 0.0, 0.0
         model.train()
         if RANK != -1:
             trainloader.sampler.set_epoch(epoch)
@@ -249,12 +273,16 @@ def train(opt, device):
                 mem = "%.3gG" % (torch.cuda.memory_reserved() / 1e9 if torch.cuda.is_available() else 0)  # (GB)
                 pbar.desc = f"{f'{epoch + 1}/{epochs}':>10}{mem:>10}{tloss:>12.3g}" + " " * 36
 
-                # Test
+                # Validate on both splits at end of each epoch
                 if i == len(pbar) - 1:  # last batch
-                    top1, top5, vloss = validate.run(
-                        model=ema.ema, dataloader=testloader, criterion=criterion, pbar=pbar
-                    )  # test accuracy, loss
-                    fitness = top1  # define fitness as top1 accuracy
+                    val_top1, val_top5, val_loss = validate.run(
+                        model=ema.ema, dataloader=valloader, criterion=criterion, pbar=pbar
+                    )  # HH19 val accuracy & loss
+                    fitness = val_top1
+                    if has_test:
+                        test_top1, test_top5, test_loss = validate.run(
+                            model=ema.ema, dataloader=testloader, criterion=criterion, pbar=pbar
+                        )  # HH25 test accuracy & loss
 
         # Scheduler
         scheduler.step()
@@ -273,13 +301,24 @@ def train(opt, device):
 
             # Log
             metrics = {
-                "train/loss": tloss,
-                f"{val}/loss": vloss,
-                "metrics/accuracy_top1": top1,
-                "metrics/accuracy_top5": top5,
-                "lr/0": optimizer.param_groups[0]["lr"],
-            }  # learning rate
+                "train/loss":        tloss,
+                "val/loss":          val_loss,
+                "val/top1":          val_top1,
+                "val/top5":          val_top5,
+                "test/loss":         test_loss,
+                "test/top1":         test_top1,
+                "test/top5":         test_top5,
+                "lr/0":              optimizer.param_groups[0]["lr"],
+            }
             logger.log_metrics(metrics, epoch)
+
+            # Append row to results CSV
+            with open(results_csv, "a", newline="") as f:
+                csv.writer(f).writerow([
+                    epoch + 1, tloss, val_loss, val_top1, val_top5,
+                    test_loss, test_top1, test_top5,
+                    optimizer.param_groups[0]["lr"],
+                ])
 
             # Save model
             final_epoch = epoch + 1 == epochs
@@ -300,7 +339,7 @@ def train(opt, device):
                 torch.save(ckpt, last)
                 if best_fitness == fitness:
                     torch.save(ckpt, best)
-                    LOGGER.info(f"Best checkpoint → epoch {epoch + 1}  (top1={fitness:.4f})")
+                    LOGGER.info(f"Best checkpoint → epoch {epoch + 1}  (val_top1={fitness:.4f}  test_top1={test_top1:.4f})")
                 del ckpt
 
     # Train complete
@@ -316,7 +355,7 @@ def train(opt, device):
         )
 
         # Plot examples
-        images, labels = (x[:25] for x in next(iter(testloader)))  # first 25 images and labels
+        images, labels = (x[:25] for x in next(iter(valloader)))  # first 25 images and labels
         pred = torch.max(ema.ema(images.to(device)), 1)[1]
         file = imshow_cls(images, labels, pred, de_parallel(model).names, verbose=False, f=save_dir / "test_images.jpg")
 
