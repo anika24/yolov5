@@ -131,6 +131,15 @@ def train(opt, device):
     test_dir = data_dir / "test"
     has_test = test_dir.exists()
     if RANK in {-1, 0}:
+        trainloader_eval = create_classification_dataloader(
+            path=data_dir / "train",
+            imgsz=imgsz,
+            batch_size=bs // WORLD_SIZE * 2,
+            augment=False,
+            cache=opt.cache,
+            rank=-1,
+            workers=nw,
+        )
         valloader = create_classification_dataloader(
             path=val_dir,
             imgsz=imgsz,
@@ -227,7 +236,7 @@ def train(opt, device):
 
     # CSV results file — written every epoch for full per-epoch export
     results_csv = save_dir / "results_detailed.csv"
-    csv_header = ["epoch", "train_loss", "val_loss", "val_top1", "val_top5",
+    csv_header = ["epoch", "train_loss", "train_top1", "val_loss", "val_top1", "val_top5",
                   "test_loss", "test_top1", "test_top5", "lr", "is_best"]
     with open(results_csv, "w", newline="") as f:
         csv.writer(f).writerow(csv_header)
@@ -242,6 +251,7 @@ def train(opt, device):
     )
     for epoch in range(epochs):  # loop over the dataset multiple times
         tloss, val_loss, test_loss, fitness = 0.0, 0.0, 0.0, 0.0
+        train_top1 = 0.0
         val_top1, val_top5, test_top1, test_top5 = 0.0, 0.0, 0.0, 0.0
         model.train()
         if RANK != -1:
@@ -276,6 +286,9 @@ def train(opt, device):
 
                 # Validate on both splits at end of each epoch
                 if i == len(pbar) - 1:  # last batch
+                    train_top1, _, _ = validate.run(
+                        model=ema.ema, dataloader=trainloader_eval, criterion=criterion, pbar=pbar
+                    )  # train accuracy (no augmentation)
                     val_top1, val_top5, val_loss = validate.run(
                         model=ema.ema, dataloader=valloader, criterion=criterion, pbar=pbar
                     )  # HH19 val accuracy & loss
@@ -324,7 +337,7 @@ def train(opt, device):
             _is_best = best_fitness == fitness and fitness > 0.0
             with open(results_csv, "a", newline="") as f:
                 csv.writer(f).writerow([
-                    epoch + 1, tloss, val_loss, val_top1, val_top5,
+                    epoch + 1, tloss, train_top1, val_loss, val_top1, val_top5,
                     test_loss, test_top1, test_top5,
                     optimizer.param_groups[0]["lr"],
                     _is_best,
