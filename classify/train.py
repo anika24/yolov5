@@ -225,7 +225,7 @@ def train(opt, device):
     scaler = amp.GradScaler(enabled=cuda)
 
     # CSV results file — written every epoch for full per-epoch export
-    results_csv = save_dir / "results.csv"
+    results_csv = save_dir / "results_detailed.csv"
     csv_header = ["epoch", "train_loss", "val_loss", "val_top1", "val_top5",
                   "test_loss", "test_top1", "test_top5", "lr", "is_best"]
     with open(results_csv, "w", newline="") as f:
