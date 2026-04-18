@@ -338,6 +338,7 @@ def classify_albumentations(
             else:
                 if hflip > 0:
                     T += [A.HorizontalFlip(p=hflip)]
+                    T += [A.Rotate(limit=15, p=0.5)]
                 if vflip > 0:
                     T += [A.VerticalFlip(p=vflip)]
                 if jitter > 0:
