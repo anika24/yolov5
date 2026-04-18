@@ -230,8 +230,8 @@ def train(opt, device):
     criterion = smartCrossEntropyLoss(label_smoothing=opt.label_smoothing)  # loss function
     best_fitness = 0.0
     _es_counter = 0    # early-stopping patience counter
-    _es_patience = 10
-    _es_warmup = 15   # don't start early stopping until after this epoch
+    _es_patience = 15
+    _es_warmup = 20   # don't start early stopping until after this epoch
     scaler = amp.GradScaler(enabled=cuda)
 
     # CSV results file — written every epoch for full per-epoch export
