@@ -290,7 +290,7 @@ def train(opt, device):
         # Log metrics
         if RANK in {-1, 0}:
             # Best fitness
-            if fitness > best_fitness:
+            if fitness >= best_fitness:
                 best_fitness = fitness
                 _es_counter = 0
             else:
